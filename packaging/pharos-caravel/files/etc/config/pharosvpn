@@ -1,0 +1,15 @@
+config pharosvpn 'main'
+	# Set to 1 once a profile is imported and selected, then start the service:
+	#   /etc/init.d/pharosvpn enable && /etc/init.d/pharosvpn start
+	option enabled '0'
+	# Stored profile name (see `caravel-owrt list`). The profile blob lives at
+	# /etc/pharos/profiles/<name>.pharos — never inline a profile here (uci is
+	# world-readable).
+	option profile ''
+	# 1 = route all traffic through the tunnel; 0 = only the profile's allowed_ips.
+	option full_tunnel '1'
+	# RESERVED — NOT YET ENFORCED. Intended to drop LAN→WAN while connected so
+	# traffic can't leak to the clear WAN if the tunnel drops. Until the kill-
+	# switch lands (see README "Status"), this option has no effect; do not rely
+	# on it for leak protection.
+	option killswitch '1'

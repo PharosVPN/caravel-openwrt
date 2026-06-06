@@ -1,0 +1,55 @@
+#!/bin/sh
+# SPDX-License-Identifier: Apache-2.0
+# Copyright (C) 2026 The PharosVPN Authors
+#
+# One-shot (uci-defaults) seed of the fw4 plumbing for client mode (design §3.3):
+# a `pharos` network interface bound to the awg0 tun, a firewall zone that
+# masquerades the LAN into the tunnel, and a lan→pharos forwarding. Idempotent —
+# safe to re-run; only adds what's missing. Removed by procd after a 0 exit.
+#
+# This does NOT touch the existing lan→wan forwarding. The kill-switch (dropping
+# lan→wan while connected) is a separate, toggled step — see pharosvpn.main.
+set -e
+
+changed=0
+
+# ── network: a static-but-deviceless interface for the awg0 tun ──────────────
+if ! uci -q get network.pharos >/dev/null; then
+	uci set network.pharos='interface'
+	uci set network.pharos.proto='none'
+	uci set network.pharos.device='awg0'
+	uci commit network
+	changed=1
+fi
+
+# ── firewall: a `pharos` zone that NATs LAN traffic into the tunnel ──────────
+zone_exists=0
+for z in $(uci -q show firewall | sed -n "s/^firewall\.\(@zone\[[0-9]*\]\)\.name='pharos'/\1/p"); do
+	zone_exists=1
+done
+if [ "$zone_exists" = "0" ]; then
+	z="$(uci add firewall zone)"
+	uci set firewall."$z".name='pharos'
+	uci add_list firewall."$z".network='pharos'
+	uci set firewall."$z".input='REJECT'
+	uci set firewall."$z".output='ACCEPT'
+	uci set firewall."$z".forward='REJECT'
+	uci set firewall."$z".masq='1'      # NAT the LAN into the tunnel
+	uci set firewall."$z".mtu_fix='1'   # clamp MSS for the ~1420 MTU tunnel
+
+	f="$(uci add firewall forwarding)"
+	uci set firewall."$f".src='lan'
+	uci set firewall."$f".dest='pharos'
+	uci commit firewall
+	changed=1
+fi
+
+# Apply now if this ran at opkg-install time on an already-running router (on
+# first boot the services read the committed config when they start, so the
+# reload is a harmless no-op). Guarded so a reload failure can't wedge install.
+if [ "$changed" = "1" ]; then
+	/etc/init.d/network reload >/dev/null 2>&1 || true
+	/etc/init.d/firewall reload >/dev/null 2>&1 || true
+fi
+
+exit 0
