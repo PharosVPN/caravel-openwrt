@@ -71,8 +71,33 @@ func processAlive(pid int) bool {
 	return p.Signal(syscall.Signal(0)) == nil
 }
 
-func cmdStatus(_ []string) error {
+func cmdStatus(args []string) error {
+	jsonOut := false
+	for _, a := range args {
+		if a == "--json" {
+			jsonOut = true
+		}
+	}
 	s, ok := readState()
+	if jsonOut {
+		// A stable shape the LuCI rpcd backend consumes without screen-scraping.
+		out := struct {
+			Up       bool   `json:"up"`
+			Profile  string `json:"profile,omitempty"`
+			Iface    string `json:"iface,omitempty"`
+			Endpoint string `json:"endpoint,omitempty"`
+			RX       int64  `json:"rx"`
+			TX       int64  `json:"tx"`
+			Since    string `json:"since,omitempty"`
+			PID      int    `json:"pid,omitempty"`
+		}{Up: ok}
+		if ok {
+			out.Profile, out.Iface, out.Endpoint = s.Profile, s.Iface, s.Endpoint
+			out.RX, out.TX, out.PID = s.RX, s.TX, s.PID
+			out.Since = s.Since.Format(time.RFC3339)
+		}
+		return emitJSON(out)
+	}
 	if !ok {
 		fmt.Println("disconnected")
 		return nil

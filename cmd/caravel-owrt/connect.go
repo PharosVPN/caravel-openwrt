@@ -56,6 +56,7 @@ func cmdConnect(args []string) error {
 	profileRef := fs.String("profile", "", "a stored profile name, or a path to a .pharos file")
 	cfgPath := fs.String("config", "", "a JSON tunnel config (testing)")
 	password := fs.String("password", "", "password for a password-mode profile (prompted if omitted)")
+	connRef := fs.String("connection", "", "which named connection profile in the bundle (default: the first)")
 	nodeID := fs.String("node", "", "which node in the profile to use (default: the entry/first)")
 	fullTunnel := fs.Bool("full-tunnel", true, "route all traffic through the tunnel")
 	if err := fs.Parse(args); err != nil {
@@ -70,7 +71,7 @@ func cmdConnect(args []string) error {
 	if *cfgPath != "" {
 		spec, err = specFromConfig(*cfgPath)
 	} else {
-		spec, err = specFromProfile(*profileRef, *nodeID, password)
+		spec, err = specFromProfile(*profileRef, *connRef, *nodeID, password)
 	}
 	if err != nil {
 		return err
@@ -157,31 +158,37 @@ func specFromConfig(path string) (dialSpec, error) {
 // specFromProfile loads a .pharos profile (from the store by name, or a file
 // path) and resolves the chosen node to a dialSpec, prompting for a password if
 // one is needed (the interactive CLI path).
-func specFromProfile(ref, nodeID string, password *string) (dialSpec, error) {
+func specFromProfile(ref, connRef, nodeID string, password *string) (dialSpec, error) {
 	data, err := loadProfileBytes(ref)
 	if err != nil {
 		return dialSpec{}, err
 	}
-	spec, err := resolveProfileSpec(data, nodeID, *password)
+	spec, err := resolveProfileSpec(data, connRef, nodeID, *password)
 	if errors.Is(err, profile.ErrPasswordNeeded) && *password == "" {
 		pw, perr := promptPassword(fmt.Sprintf("password for profile %q: ", ref))
 		if perr != nil {
 			return dialSpec{}, perr
 		}
 		*password = pw
-		spec, err = resolveProfileSpec(data, nodeID, pw)
+		spec, err = resolveProfileSpec(data, connRef, nodeID, pw)
 	}
 	return spec, err
 }
 
 // resolveProfileSpec decrypts a .pharos and resolves the chosen node to a
 // dialSpec without prompting (the password, if any, is supplied by the caller).
-func resolveProfileSpec(data []byte, nodeID, password string) (dialSpec, error) {
+// connRef selects a named connection profile within the bundle (the profiles[]
+// model: one entry per controller-issued config); empty picks the first.
+func resolveProfileSpec(data []byte, connRef, nodeID, password string) (dialSpec, error) {
 	p, err := profile.Parse(data, profile.Options{Password: password})
 	if err != nil {
 		return dialSpec{}, err
 	}
-	node, err := p.Node(nodeID)
+	cp, err := p.Select(connRef)
+	if err != nil {
+		return dialSpec{}, err
+	}
+	node, err := cp.Node(nodeID)
 	if err != nil {
 		return dialSpec{}, err
 	}

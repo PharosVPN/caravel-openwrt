@@ -88,17 +88,20 @@ REMOTE
   "fmt": "pharos-profile", "v": 1, "enc": "none",
   "payload": {
     "fleet_id": "livetest-local", "user": "livetest", "revision": 1,
-    "nodes": [{
-      "id": "builder", "name": "ubuntu-builder", "region": "lan",
-      "endpoints": ["${SRV_IP}"],
-      "protocols": [{"type": "amneziawg", "v": 2, "params": {
-        "private_key": "${CLIENT_PRIV}",
-        "address": "10.86.0.2/32",
-        "public_key": "${SERVER_PUB}",
-        "endpoints": [{"ip": "${SRV_IP}", "port_min": 443, "port_max": 443}],
-        "allowed_ips": ["0.0.0.0/0"],
-        "obfuscation": {"jc": ${OBF_JC}, "jmin": ${OBF_JMIN}, "jmax": ${OBF_JMAX}, "s1": ${OBF_S1}, "s2": ${OBF_S2}, "s3": ${OBF_S3}, "s4": ${OBF_S4}, "h1": ${OBF_H1}, "h2": ${OBF_H2}, "h3": ${OBF_H3}, "h4": ${OBF_H4}}
-      }}]
+    "profiles": [{
+      "id": "local", "name": "local", "protocol": "amneziawg",
+      "nodes": [{
+        "id": "builder", "name": "ubuntu-builder", "region": "lan",
+        "endpoints": ["${SRV_IP}"],
+        "protocols": [{"type": "amneziawg", "v": 2, "params": {
+          "private_key": "${CLIENT_PRIV}",
+          "address": "10.86.0.2/32",
+          "public_key": "${SERVER_PUB}",
+          "endpoints": [{"ip": "${SRV_IP}", "port_min": 443, "port_max": 443}],
+          "allowed_ips": ["0.0.0.0/0"],
+          "obfuscation": {"jc": ${OBF_JC}, "jmin": ${OBF_JMIN}, "jmax": ${OBF_JMAX}, "s1": ${OBF_S1}, "s2": ${OBF_S2}, "s3": ${OBF_S3}, "s4": ${OBF_S4}, "h1": ${OBF_H1}, "h2": ${OBF_H2}, "h3": ${OBF_H3}, "h4": ${OBF_H4}}
+        }}]
+      }]
     }]
   }
 }
