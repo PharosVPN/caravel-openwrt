@@ -4,3 +4,4 @@ build/
 *.pharos
 *.pharosid
 *.db
+dist/
