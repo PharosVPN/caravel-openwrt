@@ -1,0 +1,36 @@
+{
+	"admin/vpn/pharos": {
+		"title": "PharosVPN",
+		"order": 30,
+		"action": {
+			"type": "firstchild"
+		},
+		"depends": {
+			"acl": [ "luci-app-pharos-client" ]
+		}
+	},
+
+	"admin/vpn/pharos/connection": {
+		"title": "Connection",
+		"order": 10,
+		"action": {
+			"type": "view",
+			"path": "pharos/connection"
+		},
+		"depends": {
+			"acl": [ "luci-app-pharos-client" ]
+		}
+	},
+
+	"admin/vpn/pharos/profiles": {
+		"title": "Profiles",
+		"order": 20,
+		"action": {
+			"type": "view",
+			"path": "pharos/profiles"
+		},
+		"depends": {
+			"acl": [ "luci-app-pharos-client" ]
+		}
+	}
+}

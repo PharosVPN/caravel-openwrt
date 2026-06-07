@@ -1,0 +1,244 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (C) 2026 The PharosVPN Authors
+//
+// rpcd ucode backend for luci-app-pharos-client. The LuCI views call these
+// ubus methods (object "pharos") instead of screen-scraping the CLI: every
+// method shells to /usr/sbin/caravel-owrt (which emits stable JSON via its
+// --json flags) or reads/writes the non-secret /etc/config/pharosvpn uci.
+//
+// CRITICAL contract (design §3.4 / §6):
+//   - All .pharos crypto stays in the Go binary. ucode never decrypts; it only
+//     forwards a password through to `caravel-owrt` on stdin and forgets it.
+//   - Profile blobs live at /etc/pharos/profiles/<name>.pharos (0600). uci holds
+//     only the selected profile name + toggles (world-readable). We never inline
+//     a profile into uci.
+//
+// Registered with rpcd-mod-ucode; published over ubus as object "pharos".
+
+'use strict';
+
+import { popen, writefile, unlink } from 'fs';
+import { cursor } from 'uci';
+
+const CLI = '/usr/sbin/caravel-owrt';
+const PROFILE_DIR = '/etc/pharos/profiles';
+
+// shellquote single-quotes an argument for safe interpolation into a popen
+// command line.
+function shellquote(s) {
+	return `'${replace(s ?? '', "'", "'\\''")}'`;
+}
+
+// run executes a shell command line and returns { code, output } with stderr
+// merged into stdout (so a CLI error message reaches the UI). Passwords are
+// passed by piping `printf %s 'pw' | ...` into the command's stdin within the
+// command line itself — never as a separate argv element — so they don't appear
+// in the process table.
+function run(cmdline) {
+	let fp = popen(`${cmdline} 2>&1`, 'r');
+	if (!fp)
+		return { code: -1, output: 'failed to spawn ' + CLI };
+	let output = fp.read('all') ?? '';
+	let code = fp.close();
+	return { code: (code === true) ? 0 : (code === false ? 1 : code), output };
+}
+
+// tryParseJSON returns the parsed object or null (never throws into ubus).
+function tryParseJSON(s) {
+	try { return json(s); } catch (e) { return null; }
+}
+
+const methods = {
+	// status → the live tunnel state ({up,profile,iface,endpoint,rx,tx,since}).
+	status: {
+		call: function() {
+			let r = run(`${CLI} status --json`);
+			let st = tryParseJSON(r.output);
+			if (st == null)
+				return { up: false, error: trim(r.output) };
+			return st;
+		}
+	},
+
+	// list → the stored profiles ({profiles:[{name,enc,synced}]}).
+	list: {
+		call: function() {
+			let r = run(`${CLI} list --json`);
+			let out = tryParseJSON(r.output);
+			if (out == null)
+				return { profiles: [], error: trim(r.output) };
+			return out;
+		}
+	},
+
+	// inspect → a profile's nodes/path/enc/expiry, for the Connection pickers.
+	// args: { profile, password? }. Crypto runs in the Go binary; the password,
+	// if supplied, is forwarded on stdin (never argv) and not persisted.
+	inspect: {
+		args: { profile: 'name', password: 'secret' },
+		call: function(req) {
+			let name = req.args?.profile;
+			if (!name)
+				return { error: 'profile name required' };
+			let pw = req.args?.password;
+			let r;
+			if (pw != null && pw != '') {
+				// Forward the password to the CLI on stdin (never argv, so it can't
+				// appear in the process table). The CLI does all decryption in Go.
+				r = run(`printf %s ${shellquote(pw)} | ${CLI} inspect --profile ${shellquote(name)} --password-stdin --json`);
+			} else {
+				r = run(`${CLI} inspect --profile ${shellquote(name)} --json`);
+			}
+			let out = tryParseJSON(r.output);
+			if (out == null)
+				return { error: trim(r.output) };
+			return out;
+		}
+	},
+
+	// import → store an uploaded .pharos. args: { name, data } where data is the
+	// raw profile text (small JSON file). We stage it to a temp path and call
+	// `caravel-owrt import` so the same header-validation + 0600 store path is
+	// used as the CLI; we never write the blob into uci.
+	import: {
+		args: { name: 'name', data: 'data' },
+		call: function(req) {
+			let name = req.args?.name;
+			let data = req.args?.data;
+			if (!data)
+				return { error: 'no profile data' };
+			let tmp = `/tmp/pharos-import.${time()}.pharos`;
+			if (writefile(tmp, data) == null)
+				return { error: 'failed to stage upload' };
+			let cmd = `${CLI} import ${shellquote(tmp)}`;
+			if (name != null && name != '')
+				cmd += ` --name ${shellquote(name)}`;
+			let r = run(cmd);
+			unlink(tmp);
+			if (r.code != 0)
+				return { error: trim(r.output) };
+			return { ok: true, message: trim(r.output) };
+		}
+	},
+
+	// sync → fetch an account-mode profile. args: { idfile, email?, password }.
+	// idfile is the raw .pharosid bundle text (staged like import); the password
+	// is piped to the CLI on stdin so it never hits argv.
+	sync: {
+		args: { idfile: 'data', email: 'name', password: 'secret', name: 'name' },
+		call: function(req) {
+			let idfile = req.args?.idfile;
+			let pw = req.args?.password;
+			if (!idfile)
+				return { error: 'no .pharosid bundle provided' };
+			if (pw == null || pw == '')
+				return { error: 'account passphrase required' };
+			let tmp = `/tmp/pharos-sync.${time()}.pharosid`;
+			if (writefile(tmp, idfile) == null)
+				return { error: 'failed to stage .pharosid' };
+			let cmd = `${CLI} sync ${shellquote(tmp)} --password-stdin`;
+			if (req.args?.email != null && req.args.email != '')
+				cmd += ` --email ${shellquote(req.args.email)}`;
+			if (req.args?.name != null && req.args.name != '')
+				cmd += ` --name ${shellquote(req.args.name)}`;
+			let r = run(`printf %s ${shellquote(pw)} | ${cmd}`);
+			unlink(tmp);
+			let out = trim(r.output);
+			if (r.code != 0)
+				return { error: out };
+			return { ok: true, message: out };
+		}
+	},
+
+	// remove → forget a stored profile. args: { name }.
+	remove: {
+		args: { name: 'name' },
+		call: function(req) {
+			let name = req.args?.name;
+			if (!name)
+				return { error: 'profile name required' };
+			let r = run(`${CLI} rm ${shellquote(name)}`);
+			if (r.code != 0)
+				return { error: trim(r.output) };
+			return { ok: true };
+		}
+	},
+
+	// getconfig → the non-secret uci selection + toggles the Connection view binds.
+	getconfig: {
+		call: function() {
+			let ctx = cursor();
+			ctx.load('pharosvpn');
+			return {
+				enabled: ctx.get('pharosvpn', 'main', 'enabled') == '1',
+				profile: ctx.get('pharosvpn', 'main', 'profile') ?? '',
+				connection: ctx.get('pharosvpn', 'main', 'connection') ?? '',
+				node: ctx.get('pharosvpn', 'main', 'node') ?? '',
+				full_tunnel: (ctx.get('pharosvpn', 'main', 'full_tunnel') ?? '1') == '1',
+				killswitch: (ctx.get('pharosvpn', 'main', 'killswitch') ?? '1') == '1'
+			};
+		}
+	},
+
+	// setconfig → write the non-secret selection + toggles into uci and commit.
+	// Only the named keys; the profile blob never lands here. Does not start the
+	// service (that's an explicit connect action).
+	setconfig: {
+		args: { profile: 'name', connection: 'name', node: 'name', full_tunnel: false, killswitch: false, enabled: false },
+		call: function(req) {
+			let ctx = cursor();
+			ctx.load('pharosvpn');
+			if (!ctx.get('pharosvpn', 'main'))
+				ctx.set('pharosvpn', 'main', 'pharosvpn');
+			let a = req.args ?? {};
+			if (a.profile != null) ctx.set('pharosvpn', 'main', 'profile', a.profile);
+			if (a.connection != null) ctx.set('pharosvpn', 'main', 'connection', a.connection);
+			if (a.node != null) ctx.set('pharosvpn', 'main', 'node', a.node);
+			if (a.full_tunnel != null) ctx.set('pharosvpn', 'main', 'full_tunnel', a.full_tunnel ? '1' : '0');
+			if (a.killswitch != null) ctx.set('pharosvpn', 'main', 'killswitch', a.killswitch ? '1' : '0');
+			if (a.enabled != null) ctx.set('pharosvpn', 'main', 'enabled', a.enabled ? '1' : '0');
+			ctx.commit('pharosvpn');
+			return { ok: true };
+		}
+	},
+
+	// connect → persist the selection, mark enabled, and (re)start the procd
+	// service so the tunnel comes up and survives reboot. The actual tun + routing
+	// happens in the Go worker the init script supervises.
+	connect: {
+		args: { profile: 'name', connection: 'name', node: 'name', full_tunnel: false, killswitch: false },
+		call: function(req) {
+			let a = req.args ?? {};
+			if (!a.profile)
+				return { error: 'profile name required' };
+			let ctx = cursor();
+			ctx.load('pharosvpn');
+			if (!ctx.get('pharosvpn', 'main'))
+				ctx.set('pharosvpn', 'main', 'pharosvpn');
+			ctx.set('pharosvpn', 'main', 'profile', a.profile);
+			ctx.set('pharosvpn', 'main', 'connection', a.connection ?? '');
+			ctx.set('pharosvpn', 'main', 'node', a.node ?? '');
+			ctx.set('pharosvpn', 'main', 'full_tunnel', (a.full_tunnel == null || a.full_tunnel) ? '1' : '0');
+			ctx.set('pharosvpn', 'main', 'killswitch', (a.killswitch == null || a.killswitch) ? '1' : '0');
+			ctx.set('pharosvpn', 'main', 'enabled', '1');
+			ctx.commit('pharosvpn');
+			let r = run('/etc/init.d/pharosvpn enable >/dev/null 2>&1; /etc/init.d/pharosvpn restart 2>&1');
+			return { ok: true, message: trim(r.output) };
+		}
+	},
+
+	// disconnect → stop the service and clear the enabled flag (so it does not
+	// come back at boot). Profiles and selection are kept.
+	disconnect: {
+		call: function() {
+			let ctx = cursor();
+			ctx.load('pharosvpn');
+			ctx.set('pharosvpn', 'main', 'enabled', '0');
+			ctx.commit('pharosvpn');
+			let r = run('/etc/init.d/pharosvpn stop 2>&1; /etc/init.d/pharosvpn disable >/dev/null 2>&1');
+			return { ok: true, message: trim(r.output) };
+		}
+	}
+};
+
+return { 'pharos': methods };

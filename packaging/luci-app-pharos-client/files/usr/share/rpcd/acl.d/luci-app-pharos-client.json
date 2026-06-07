@@ -1,0 +1,17 @@
+{
+	"luci-app-pharos-client": {
+		"description": "Grant access to PharosVPN client control (profiles + connection)",
+		"read": {
+			"ubus": {
+				"pharos": [ "status", "list", "inspect", "getconfig" ]
+			},
+			"uci": [ "pharosvpn" ]
+		},
+		"write": {
+			"ubus": {
+				"pharos": [ "import", "sync", "remove", "setconfig", "connect", "disconnect" ]
+			},
+			"uci": [ "pharosvpn" ]
+		}
+	}
+}
