@@ -6,6 +6,12 @@ config pharosvpn 'main'
 	# /etc/pharos/profiles/<name>.pharos — never inline a profile here (uci is
 	# world-readable).
 	option profile ''
+	# Named connection profile within the bundle (empty = the first). A profile
+	# file can carry several connection profiles (profiles[]); the LuCI Connection
+	# view sets this from the picker.
+	option connection ''
+	# Which node/exit in the chosen connection to dial (empty = the entry/first).
+	option node ''
 	# 1 = route all traffic through the tunnel; 0 = only the profile's allowed_ips.
 	option full_tunnel '1'
 	# RESERVED — NOT YET ENFORCED. Intended to drop LAN→WAN while connected so
